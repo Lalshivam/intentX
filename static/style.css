@@ -1,0 +1,159 @@
+:root {
+  --bg: #f6f4ef;
+  --ink: #112022;
+  --muted: #3f575a;
+  --card: #ffffff;
+  --line: #d6d1c2;
+  --brand: #1c6e6f;
+  --danger: #a5243d;
+  --shadow: 0 10px 30px rgba(0, 0, 0, 0.08);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  color: var(--ink);
+  background: radial-gradient(circle at top right, #dbe8da, #f6f4ef 45%);
+  font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+}
+
+.topbar {
+  padding: 20px 24px;
+  border-bottom: 1px solid var(--line);
+  background: linear-gradient(120deg, #fcfbf8, #f0efe8);
+}
+
+.topbar h1 {
+  margin: 0 0 6px;
+  font-size: 1.8rem;
+}
+
+.topbar p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: 330px 1fr;
+  gap: 16px;
+  padding: 16px;
+}
+
+.panel {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: var(--shadow);
+  padding: 14px;
+}
+
+.controls,
+.terminal {
+  grid-column: 1;
+}
+
+.stream {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.field input,
+.field select,
+textarea {
+  border: 1px solid #b5c2c4;
+  border-radius: 8px;
+  padding: 9px 10px;
+  font-size: 0.95rem;
+}
+
+.row {
+  display: flex;
+  gap: 8px;
+}
+
+.button {
+  border: none;
+  border-radius: 9px;
+  padding: 10px 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.button.primary {
+  background: var(--brand);
+  color: #fff;
+}
+
+.button.secondary {
+  background: #2b4657;
+  color: #fff;
+}
+
+.button.danger {
+  background: var(--danger);
+  color: #fff;
+}
+
+img#streamView {
+  width: 100%;
+  min-height: 360px;
+  border: 1px solid #b8c6c8;
+  border-radius: 10px;
+  background: #0b0b0b;
+  object-fit: contain;
+}
+
+.status {
+  margin-top: 8px;
+  font-size: 0.92rem;
+}
+
+.hint {
+  color: var(--muted);
+  margin-top: 0;
+}
+
+.hidden {
+  display: none;
+}
+
+pre {
+  background: #0f1e24;
+  color: #cde7ec;
+  border-radius: 10px;
+  padding: 10px;
+  min-height: 180px;
+  overflow: auto;
+}
+
+small {
+  color: var(--muted);
+}
+
+@media (max-width: 980px) {
+  .layout {
+    grid-template-columns: 1fr;
+  }
+
+  .controls,
+  .stream,
+  .terminal {
+    grid-column: auto;
+    grid-row: auto;
+  }
+
+  img#streamView {
+    min-height: 240px;
+  }
+}

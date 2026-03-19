@@ -8,10 +8,12 @@ import mediapipe as mp
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 
+from bytetrack_tracker import ByteTrackerWrapper
+from item_memory import ItemMemory
 from interaction_detector import InteractionDetector
-from person_detector import PersonDetector
 from person_tracker import PersonTracker
 from pose_behavior import classify_behavior
+from unified_detector import UnifiedDetector
 
 
 # BlazePose landmark edges used by Pose Landmarker (33 keypoints).
@@ -83,6 +85,7 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--source", default="0")
     parser.add_argument("--model", default="pose_landmarker.task")
+    parser.add_argument("--frame-skip", type=int, default=1)
     return parser.parse_args()
 
 
@@ -94,6 +97,7 @@ def main():
     args = parse_args()
 
     source = int(args.source) if args.source.isdigit() else args.source
+    frame_skip = max(1, int(args.frame_skip))
     cap = cv2.VideoCapture(source)
 
     if not cap.isOpened():
@@ -109,7 +113,9 @@ def main():
     )
 
     pose_detector = vision.PoseLandmarker.create_from_options(options)
-    person_detector = PersonDetector()
+    detector = UnifiedDetector()
+    tracker = ByteTrackerWrapper()
+    item_memory = ItemMemory()
     interaction_detector = InteractionDetector()
     person_tracker = PersonTracker(retention_seconds=3.0)
 
@@ -117,6 +123,7 @@ def main():
     frame_interval_ms = int(1000 / source_fps) if source_fps and source_fps > 1 else 33
     target_frame_ms = float(frame_interval_ms)
     is_live_source = isinstance(source, int)
+    frame_index = 0
 
     while True:
         frame_start = time.perf_counter()
@@ -124,14 +131,39 @@ def main():
         if not ret:
             break
 
+        frame_index += 1
+        if frame_skip > 1 and (frame_index % frame_skip) != 0:
+            cv2.imshow("Pose Behavior Monitor", frame)
+            if cv2.waitKey(1) & 0xFF in [27, ord("q")]:
+                break
+            continue
+
         output = frame.copy()
         frame_h, frame_w = frame.shape[:2]
         now = time.monotonic()
 
-        person_boxes = person_detector.detect(frame)
+        person_boxes, objects = detector.detect(frame)
+        item_memory.update(objects)
+        tracks = tracker.update(person_boxes)
+
+        for obj in objects:
+            x1, y1, x2, y2 = obj["bbox"]
+            cv2.rectangle(output, (x1, y1), (x2, y2), (255, 0, 0), 2)
+            cv2.putText(
+                output,
+                obj["label"],
+                (x1, max(18, y1 - 5)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (255, 0, 0),
+                2,
+            )
 
         detections = []
-        for x1, y1, x2, y2 in person_boxes:
+        for track in tracks:
+            x1, y1, x2, y2 = track["xyxy"]
+            track_id = track["tracker_id"]
+
             crop = frame[y1:y2, x1:x2]
             if crop.size == 0:
                 continue
@@ -148,19 +180,16 @@ def main():
 
             landmarks = result.pose_landmarks[0]
             keypoints = to_pixel_keypoints(landmarks, x2 - x1, y2 - y1, x1, y1)
-            detections.append((landmarks, (x1, y1, x2, y2), keypoints))
+            detections.append((landmarks, (x1, y1, x2, y2), keypoints, track_id))
 
         if detections:
-            bboxes = [bbox for _, bbox, _ in detections]
-            track_ids = person_tracker.assign_tracks(bboxes, now)
-
-            for (landmarks, bbox, keypoints), track_id in zip(detections, track_ids):
+            for landmarks, bbox, keypoints, track_id in detections:
                 x1, y1, x2, y2 = bbox
 
                 interaction = interaction_detector.analyze(
                     bbox=bbox,
                     keypoints=keypoints,
-                    items=[],
+                    items=objects,
                     frame_shape=frame.shape,
                 )
 
@@ -172,7 +201,7 @@ def main():
                     timestamp=now,
                 )
 
-                behavior = classify_behavior(state, now)
+                behavior = classify_behavior(state, now, item_memory=item_memory)
 
                 color = (0, 0, 255) if behavior.label == "SUSPICIOUS" else (0, 200, 0)
 
@@ -211,6 +240,29 @@ def main():
                     1,
                 )
 
+                if interaction["item_touch_labels"]:
+                    touch_text = "touching: " + ",".join(interaction["item_touch_labels"])
+                    cv2.putText(
+                        output,
+                        touch_text,
+                        (x1, min(frame_h - 8, y2 + 35)),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.5,
+                        (0, 255, 255),
+                        2,
+                    )
+
+                if "item_disappearance" in behavior.reasons:
+                    cv2.putText(
+                        output,
+                        "ITEM DISAPPEARED",
+                        (x1, max(18, y1 - 30)),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.6,
+                        (0, 0, 255),
+                        2,
+                    )
+
             person_tracker.prune(now)
 
         else:
@@ -227,10 +279,13 @@ def main():
 
         cv2.imshow("Pose Behavior Monitor", output)
 
-        wait_ms = 1
-        if not is_live_source:
+        if is_live_source:
+            wait_ms = 1
+        else:
             elapsed_ms = (time.perf_counter() - frame_start) * 1000.0
-            wait_ms = max(1, int(round(target_frame_ms - elapsed_ms)))
+            wait_ms = int(target_frame_ms - elapsed_ms)
+            if wait_ms < 1:
+                wait_ms = 1
 
         if cv2.waitKey(wait_ms) & 0xFF in [27, ord("q")]:
             break

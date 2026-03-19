@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from person_tracker import PersonState
 
@@ -33,7 +34,17 @@ def _count_head_turns(state: PersonState, now: float, window_seconds: float = 1.
     return turns
 
 
-def classify_behavior(state: PersonState, now: float) -> BehaviorDecision:
+def _recent_item_labels(state: PersonState, now: float, window_seconds: float = 1.2) -> set[str]:
+    labels: set[str] = set()
+    for timestamp, touched_labels in state.item_contacts:
+        if timestamp < now - window_seconds:
+            continue
+        for label in touched_labels:
+            labels.add(label)
+    return labels
+
+
+def classify_behavior(state: PersonState, now: float, item_memory: Any = None) -> BehaviorDecision:
     score = 0.0
     reasons: list[str] = []
     recent_torso = _recent_count(state.torso_contacts, now, 1.2) > 0
@@ -51,6 +62,14 @@ def classify_behavior(state: PersonState, now: float) -> BehaviorDecision:
     if state.just_lost_item_near_torso:
         score += 2.3
         reasons.append("item_disappearance")
+
+    if item_memory is not None and recent_interaction:
+        for label in _recent_item_labels(state, now):
+            if item_memory.disappeared_recently(label, now):
+                score += 2.5
+                if "item_disappearance" not in reasons:
+                    reasons.append("item_disappearance")
+                break
 
     recent_crossings = _recent_count(state.center_crossings, now, 1.5)
     if recent_interaction and recent_crossings >= 1:
@@ -73,7 +92,7 @@ def classify_behavior(state: PersonState, now: float) -> BehaviorDecision:
         score += 0.7
         reasons.append("rapid_hand_retract")
 
-    label = "SUSPICIOUS" if score >= 2.5 else "NORMAL"
+    label = "SUSPICIOUS" if score >= 5.0 else "NORMAL"
     return BehaviorDecision(
         label=label,
         score=score,

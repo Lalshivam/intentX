@@ -20,11 +20,11 @@ class PersonDetector:
         self.model = YOLO(model)
         self.conf = conf
 
-    def detect(self, frame) -> list[tuple[int, int, int, int]]:
+    def detect(self, frame) -> list[tuple[int, int, int, int, float]]:
         frame_h, frame_w = frame.shape[:2]
         results = self.model(frame, conf=self.conf, verbose=False)
 
-        boxes: list[tuple[int, int, int, int]] = []
+        boxes: list[tuple[int, int, int, int, float]] = []
         for result in results:
             if result.boxes is None:
                 continue
@@ -44,6 +44,6 @@ class PersonDetector:
                 if x2 - x1 < 8 or y2 - y1 < 8:
                     continue
 
-                boxes.append((x1, y1, x2, y2))
+                boxes.append((x1, y1, x2, y2, float(box.conf[0])))
 
         return boxes

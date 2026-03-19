@@ -24,13 +24,6 @@ def _point_from_keypoint(
     return keypoints[index]
 
 
-def _point_in_rect(point: tuple[float, float] | None, rect: tuple[int, int, int, int]) -> bool:
-    if point is None:
-        return False
-    x, y = point
-    return rect[0] <= x <= rect[2] and rect[1] <= y <= rect[3]
-
-
 def _distance(a: tuple[float, float] | None, b: tuple[float, float] | None) -> float:
     if a is None or b is None:
         return float("inf")
@@ -39,21 +32,9 @@ def _distance(a: tuple[float, float] | None, b: tuple[float, float] | None) -> f
     return math.sqrt((dx * dx) + (dy * dy))
 
 
-def _bbox_overlap(box_a: tuple[int, int, int, int], box_b: tuple[int, int, int, int]) -> float:
-    ax1, ay1, ax2, ay2 = box_a
-    bx1, by1, bx2, by2 = box_b
-    ix1 = max(ax1, bx1)
-    iy1 = max(ay1, by1)
-    ix2 = min(ax2, bx2)
-    iy2 = min(ay2, by2)
-    iw = max(0, ix2 - ix1)
-    ih = max(0, iy2 - iy1)
-    inter = iw * ih
-    if inter <= 0:
-        return 0.0
-    area_a = max(1, (ax2 - ax1) * (ay2 - ay1))
-    area_b = max(1, (bx2 - bx1) * (by2 - by1))
-    return inter / float(min(area_a, area_b))
+def _bbox_center(bbox: tuple[int, int, int, int]) -> tuple[float, float]:
+    x1, y1, x2, y2 = bbox
+    return ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
 
 
 class InteractionDetector:
@@ -69,9 +50,23 @@ class InteractionDetector:
         items: list[dict],
         frame_shape: tuple[int, int, int],
     ) -> dict:
-        x1, y1, x2, y2 = bbox
-        box_width = max(1, x2 - x1)
-        box_height = max(1, y2 - y1)
+        _ = frame_shape
+
+        result = {
+            "left_wrist": None,
+            "right_wrist": None,
+            "torso_center": None,
+            "near_torso": False,
+            "near_bag": False,
+            "active_zones": [],
+            "is_near_shelf": False,
+            "head_offset": 0.0,
+            "item_touch_labels": [],
+            "bag_regions": [],
+        }
+
+        if not keypoints:
+            return result
 
         left_wrist = _point_from_keypoint(keypoints, LEFT_WRIST)
         right_wrist = _point_from_keypoint(keypoints, RIGHT_WRIST)
@@ -81,42 +76,40 @@ class InteractionDetector:
         right_hip = _point_from_keypoint(keypoints, RIGHT_HIP)
         nose = _point_from_keypoint(keypoints, NOSE)
 
+        result["left_wrist"] = left_wrist
+        result["right_wrist"] = right_wrist
+
         torso_center = self._torso_center(bbox, left_shoulder, right_shoulder, left_hip, right_hip)
-        torso_radius = max(32.0, box_width * 0.22)
-
-        bag_regions: list[tuple[int, int, int, int]] = []
-        for item in items:
-            item_bbox = item.get("bbox")
-            item_label = item.get("label")
-            if item_bbox is None or item_label is None:
-                continue
-            item_box = tuple(item_bbox)
-            if item_label in BAG_LABELS and _bbox_overlap(bbox, item_box) >= 0.1:
-                bag_regions.append(item_box)
-
-        if not bag_regions:
-            hip_band_top = int(y1 + box_height * 0.45)
-            hip_band_bottom = int(y1 + box_height * 0.92)
-            hip_band_left = int(x1 - box_width * 0.05)
-            hip_band_right = int(x2 + box_width * 0.05)
-            bag_regions.append((hip_band_left, hip_band_top, hip_band_right, hip_band_bottom))
-
-        near_torso = min(_distance(left_wrist, torso_center), _distance(right_wrist, torso_center)) <= torso_radius
-        near_bag = any(
-            _point_in_rect(left_wrist, region) or _point_in_rect(right_wrist, region)
-            for region in bag_regions
-        )
+        result["torso_center"] = torso_center
 
         item_touch_labels: list[str] = []
+        bag_regions: list[tuple[int, int, int, int]] = []
+
+        # HAND <-> ITEM proximity
         for item in items:
             item_bbox = item.get("bbox")
             item_label = item.get("label")
             if item_bbox is None or item_label is None:
                 continue
-            item_center = ((item_bbox[0] + item_bbox[2]) / 2.0, (item_bbox[1] + item_bbox[3]) / 2.0)
-            item_radius = max(24.0, min(item_bbox[2] - item_bbox[0], item_bbox[3] - item_bbox[1]) * 0.6)
-            if _distance(left_wrist, item_center) <= item_radius or _distance(right_wrist, item_center) <= item_radius:
+
+            item_box = tuple(item_bbox)
+            item_center = _bbox_center(item_box)
+            if _distance(left_wrist, item_center) < 80 or _distance(right_wrist, item_center) < 80:
                 item_touch_labels.append(item_label)
+
+            if item_label in BAG_LABELS:
+                bag_regions.append(item_box)
+
+        # HAND <-> TORSO proximity
+        if _distance(left_wrist, torso_center) < 100 or _distance(right_wrist, torso_center) < 100:
+            result["near_torso"] = True
+
+        # HAND <-> BAG proximity
+        for bag_bbox in bag_regions:
+            bag_center = _bbox_center(bag_bbox)
+            if _distance(left_wrist, bag_center) < 90 or _distance(right_wrist, bag_center) < 90:
+                result["near_bag"] = True
+                break
 
         shoulder_center_x = None
         shoulder_width = 0.0
@@ -128,18 +121,12 @@ class InteractionDetector:
         if nose is not None and shoulder_center_x is not None:
             head_offset = (nose[0] - shoulder_center_x) / shoulder_width
 
-        return {
-            "left_wrist": left_wrist,
-            "right_wrist": right_wrist,
-            "torso_center": torso_center,
-            "near_torso": near_torso,
-            "near_bag": near_bag,
-            "active_zones": [],
-            "is_near_shelf": near_torso or near_bag,
-            "head_offset": head_offset,
-            "item_touch_labels": item_touch_labels,
-            "bag_regions": bag_regions,
-        }
+        result["head_offset"] = head_offset
+        result["item_touch_labels"] = item_touch_labels
+        result["bag_regions"] = bag_regions
+        result["is_near_shelf"] = result["near_torso"] or result["near_bag"]
+
+        return result
 
     @staticmethod
     def _torso_center(

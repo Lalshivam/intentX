@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pose Behavior Monitor</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1>Pose Behavior Monitor</h1>
+    <p>Web interface for live or recorded sources with real-time detection stream.</p>
+  </header>
+
+  <main class="layout">
+    <section class="panel controls">
+      <h2>Source</h2>
+
+      <label class="field">
+        <span>Mode</span>
+        <select id="sourceMode">
+          <option value="live">Live webcam</option>
+          <option value="file">Recorded video</option>
+        </select>
+      </label>
+
+      <div id="liveSourceGroup" class="field">
+        <span>Camera index</span>
+        <input id="cameraIndex" type="number" min="0" value="0">
+      </div>
+
+      <div id="fileSourceGroup" class="field hidden">
+        <span>Upload video</span>
+        <input id="videoFile" type="file" accept="video/*">
+        <button id="uploadBtn" class="button secondary" type="button">Upload</button>
+        <small id="uploadStatus"></small>
+      </div>
+
+      <label class="field">
+        <span>Frame skip</span>
+        <input id="frameSkip" type="number" min="1" value="1">
+      </label>
+
+      <div class="row">
+        <button id="startBtn" class="button primary" type="button">Start</button>
+        <button id="stopBtn" class="button danger" type="button">Stop</button>
+      </div>
+
+      <div class="status">
+        <strong>Status:</strong> <span id="engineStatus">idle</span>
+      </div>
+      <div class="status">
+        <strong>Backend:</strong> <span id="engineBackend">-</span>
+      </div>
+      <div class="status">
+        <strong>Message:</strong> <span id="engineMessage">-</span>
+      </div>
+    </section>
+
+    <section class="panel stream">
+      <h2>Detection Stream</h2>
+      <img id="streamView" src="/video_feed" alt="Detection stream">
+    </section>
+
+    <section class="panel terminal">
+      <h2>Terminal Commands</h2>
+      <p class="hint">Runs commands in the project directory while the stream is active.</p>
+      <textarea id="commandInput" rows="4" placeholder="Example: python --version"></textarea>
+      <div class="row">
+        <button id="runCmdBtn" class="button secondary" type="button">Run Command</button>
+      </div>
+      <pre id="commandOutput">No command executed.</pre>
+    </section>
+  </main>
+
+  <script>
+    const sourceMode = document.getElementById('sourceMode');
+    const liveSourceGroup = document.getElementById('liveSourceGroup');
+    const fileSourceGroup = document.getElementById('fileSourceGroup');
+    const cameraIndex = document.getElementById('cameraIndex');
+    const frameSkip = document.getElementById('frameSkip');
+    const videoFile = document.getElementById('videoFile');
+    const uploadBtn = document.getElementById('uploadBtn');
+    const uploadStatus = document.getElementById('uploadStatus');
+    const startBtn = document.getElementById('startBtn');
+    const stopBtn = document.getElementById('stopBtn');
+    const engineStatus = document.getElementById('engineStatus');
+    const engineBackend = document.getElementById('engineBackend');
+    const engineMessage = document.getElementById('engineMessage');
+    const runCmdBtn = document.getElementById('runCmdBtn');
+    const commandInput = document.getElementById('commandInput');
+    const commandOutput = document.getElementById('commandOutput');
+    const streamView = document.getElementById('streamView');
+
+    let uploadedPath = null;
+
+    function updateModeUI() {
+      if (sourceMode.value === 'live') {
+        liveSourceGroup.classList.remove('hidden');
+        fileSourceGroup.classList.add('hidden');
+      } else {
+        liveSourceGroup.classList.add('hidden');
+        fileSourceGroup.classList.remove('hidden');
+      }
+    }
+
+    sourceMode.addEventListener('change', updateModeUI);
+    updateModeUI();
+
+    uploadBtn.addEventListener('click', async () => {
+      if (!videoFile.files || videoFile.files.length === 0) {
+        uploadStatus.textContent = 'Select a video file first.';
+        return;
+      }
+
+      uploadStatus.textContent = 'Uploading...';
+      const formData = new FormData();
+      formData.append('video', videoFile.files[0]);
+
+      const response = await fetch('/api/upload', {
+        method: 'POST',
+        body: formData,
+      });
+      const data = await response.json();
+
+      if (!data.ok) {
+        uploadStatus.textContent = data.error || 'Upload failed.';
+        return;
+      }
+
+      uploadedPath = data.path;
+      uploadStatus.textContent = 'Uploaded successfully.';
+    });
+
+    startBtn.addEventListener('click', async () => {
+      let source = '0';
+      if (sourceMode.value === 'live') {
+        source = String(cameraIndex.value || '0');
+      } else {
+        if (!uploadedPath) {
+          uploadStatus.textContent = 'Upload a video before starting.';
+          return;
+        }
+        source = uploadedPath;
+      }
+
+      const response = await fetch('/api/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          source,
+          frame_skip: Number(frameSkip.value || 1),
+        }),
+      });
+
+      const data = await response.json();
+      if (!data.ok) {
+        engineMessage.textContent = data.error || 'Failed to start.';
+        return;
+      }
+
+      streamView.src = `/video_feed?ts=${Date.now()}`;
+
+      await refreshStatus();
+    });
+
+    stopBtn.addEventListener('click', async () => {
+      await fetch('/api/stop', { method: 'POST' });
+      await refreshStatus();
+    });
+
+    runCmdBtn.addEventListener('click', async () => {
+      const command = commandInput.value.trim();
+      if (!command) {
+        commandOutput.textContent = 'Type a command first.';
+        return;
+      }
+
+      commandOutput.textContent = 'Running command...';
+      const response = await fetch('/api/terminal/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ command, timeout: 60 }),
+      });
+      const data = await response.json();
+
+      if (!data.ok) {
+        commandOutput.textContent = data.error || 'Command failed to run.';
+        return;
+      }
+
+      commandOutput.textContent =
+        `Exit code: ${data.returncode}\n\nSTDOUT:\n${data.stdout || '(empty)'}\n\nSTDERR:\n${data.stderr || '(empty)'}`;
+    });
+
+    async function refreshStatus() {
+      const response = await fetch('/api/status');
+      const status = await response.json();
+      engineStatus.textContent = status.mode || 'unknown';
+      engineBackend.textContent = status.backend || '-';
+      engineMessage.textContent = status.message || '-';
+    }
+
+    setInterval(refreshStatus, 1000);
+    refreshStatus();
+  </script>
+</body>
+</html>
